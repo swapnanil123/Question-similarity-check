@@ -1,0 +1,26 @@
+# React (Node.js frontend)
+node_modules/
+build/
+dist/
+.env
+
+# Python (Flask backend)
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+instance/
+
+# Log files
+*.log
+
+# IDE/editor config
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+Final_dataset.csv
