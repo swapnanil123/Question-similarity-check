@@ -1,37 +1,44 @@
 import pandas as pd
-import csv
+import docx
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 from sentence_transformers import SentenceTransformer, util
+import numpy as np
+
 
 class QuestionSimilarityChecker:
     def __init__(self):
         # Load dataset
         self.dataset = pd.read_csv("Final_dataset.csv")
-        
-        # Use semantic embedding model
+
+        # Embedding model
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         self.question_vectors = self.embedding_model.encode(
             self.dataset['question'].tolist(), convert_to_tensor=True
         )
-        
-        # Threshold for semantic similarity
+
+        # Topic prediction setup
+        self.topic_encoder = LabelEncoder()
+        topics_encoded = self.topic_encoder.fit_transform(self.dataset['topic'].astype(str))
+
+        self.topic_model = RandomForestClassifier(n_estimators=100)
+        self.topic_model.fit(self.question_vectors.cpu().numpy(), topics_encoded)
+
+        # Semantic threshold
         self.similarity_threshold = 0.6
 
-        # Train topic prediction model
-        self.topic_model = LogisticRegression(max_iter=1000)
-        self.topic_model.fit(self.question_vectors.cpu().numpy(), self.dataset['topic'].tolist())
-
-        # Prepare marks and weightage
+        # Marks and weightage setup
         self.marks = self.dataset['marks'].values
         self.weightage = self.dataset['weightage'].values
 
-        self.marks_classes = self.convert_to_classes(self.marks)
-        self.weightage_classes = self.convert_to_classes(self.weightage)
-
-        # Split for marks and weightage training
         self.X_train, self.X_test, self.y_marks_train, self.y_marks_test, self.y_weightage_train, self.y_weightage_test = train_test_split(
-            self.question_vectors.cpu().numpy(), self.marks_classes, self.weightage_classes, test_size=0.2, random_state=42
+            self.question_vectors.cpu().numpy(),
+            self.marks,
+            self.weightage,
+            test_size=0.2,
+            random_state=42
         )
 
         self.marks_model = LogisticRegression(max_iter=1000)
@@ -40,44 +47,83 @@ class QuestionSimilarityChecker:
         self.weightage_model = LogisticRegression(max_iter=1000)
         self.weightage_model.fit(self.X_train, self.y_weightage_train)
 
-    def convert_to_classes(self, values):
-        return values  # you can later convert to labels like 'low', 'medium', 'high'
+    def check_similarity(self, new_question):
+        new_vector = self.embedding_model.encode(new_question, convert_to_tensor=True)
 
-    def convert_to_values(self, classes):
-        return classes
-
-    def check_similarity(self, new_question, given_topic):
-        # Semantic embedding
-        new_question_vector = self.embedding_model.encode(new_question, convert_to_tensor=True)
-
-        # Semantic similarity
-        cosine_scores = util.cos_sim(new_question_vector, self.question_vectors)
+        cosine_scores = util.cos_sim(new_vector, self.question_vectors)
         similar_indices = [i for i, score in enumerate(cosine_scores[0]) if score >= self.similarity_threshold]
-        
+
         similar_questions = self.dataset.iloc[similar_indices]['question'].tolist()
         similar_topics = self.dataset.iloc[similar_indices]['topic'].tolist()
 
-        same_topic_indices = [i for i, topic in enumerate(similar_topics) if topic == given_topic]
-        similar_questions_exist = len(similar_questions) > 0
-        similar_questions_same_topic = len(same_topic_indices) > 0
+        topic_probs = self.topic_model.predict_proba(new_vector.cpu().numpy().reshape(1, -1))
+        max_prob_index = topic_probs.argmax()
+        max_prob = topic_probs[0, max_prob_index]
 
-        # Predict topic
-        predicted_topic = self.topic_model.predict(new_question_vector.cpu().numpy().reshape(1, -1))[0]
-        is_valid_topic = given_topic != predicted_topic
+        if max_prob < 0.3:  # LOWERED from 0.5
+            predicted_topic = "Unknown"
+        else:
+            predicted_topic = self.topic_encoder.inverse_transform([max_prob_index])[0]
 
-        same_question = similar_questions[0] if similar_questions_exist else "null"
+        same_question = similar_questions[0] if similar_questions else "null"
+        same_topic = any(t == predicted_topic for t in similar_topics) if predicted_topic != "Unknown" else False
+        similar_exist = len(similar_questions) > 0
 
-        return similar_questions_exist, similar_questions_same_topic, is_valid_topic, same_question
+        return similar_exist, same_topic, predicted_topic, same_question
 
-    def predict_marks(self, question_vector):
-        # Embed the question and predict marks
-        embedded = self.embedding_model.encode(question_vector, convert_to_tensor=True).cpu().numpy().reshape(1, -1)
-        predicted_marks_class = self.marks_model.predict(embedded)
-        predicted_marks = self.convert_to_values(predicted_marks_class)[0]
-        return predicted_marks
+    def predict_marks(self, question_text):
+        embedded = self.embedding_model.encode(question_text, convert_to_tensor=True).cpu().numpy().reshape(1, -1)
+        predicted = self.marks_model.predict(embedded)
+        return predicted[0]
 
-    def predict_weightage(self, question_vector):
-        embedded = self.embedding_model.encode(question_vector, convert_to_tensor=True).cpu().numpy().reshape(1, -1)
-        predicted_weightage_class = self.weightage_model.predict(embedded)
-        predicted_weightage = self.convert_to_values(predicted_weightage_class)[0]
-        return predicted_weightage
+    def predict_weightage(self, question_text):
+        embedded = self.embedding_model.encode(question_text, convert_to_tensor=True).cpu().numpy().reshape(1, -1)
+        predicted = self.weightage_model.predict(embedded)
+        return predicted[0]
+
+
+def read_input_file(filepath):
+    if filepath.endswith('.csv'):
+        df = pd.read_csv(filepath, header=None)
+        if df.shape[1] == 1:
+            df.columns = ['question']
+    elif filepath.endswith(('.xlsx', '.xls')):
+        df = pd.read_excel(filepath)
+        if df.shape[1] == 1:
+            df.columns = ['question']
+    elif filepath.endswith('.docx'):
+        doc = docx.Document(filepath)
+        data = [para.text for para in doc.paragraphs if para.text.strip()]
+        df = pd.DataFrame(data, columns=["question"])
+    else:
+        raise ValueError("Unsupported file format")
+
+    df = df[df['question'].notna()]
+    df = df[df['question'].str.strip() != '']
+    return df.reset_index(drop=True)
+
+
+def analyze_questions(model, new_df):
+    results = []
+    for question in new_df['question']:
+        similar_exist, same_topic, predicted_topic, matched_q = model.check_similarity(question)
+
+        try:
+            predicted_marks = model.predict_marks(question)
+            predicted_weightage = model.predict_weightage(question)
+        except:
+            predicted_marks = 0
+            predicted_weightage = 0
+
+        results.append({
+            "question": question,
+            "similar_questions": similar_exist,
+            "same_topic": same_topic,
+            "predicted_topic": predicted_topic,
+            "similar_question_name": matched_q,
+            "marks": predicted_marks,
+            "weightage": predicted_weightage
+        })
+
+    return pd.DataFrame(results)
+

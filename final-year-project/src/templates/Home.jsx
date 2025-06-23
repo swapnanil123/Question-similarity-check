@@ -1,13 +1,13 @@
 import React from 'react'
 
-import Content from "./Content"
+import QuestionChecker from "./QuestionChecker"
 import 'bootstrap/dist/css/bootstrap.min.css';
 import "./Home.css"
 
 const Home = () => {
   return (
     <div>
-        <Content />
+        <QuestionChecker />
     </div>
   )
 }
